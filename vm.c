@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include "common.h"
+#include "compiler.h"
 #include "debug.h"
 #include "vm.h"
 
@@ -95,11 +96,7 @@ void initVM() {
     
  }
 
- InterpretResult interpret(Chunk* chunk) {
-    vm.chunk = chunk;
-    // If we were trying to squeeze every ounce of speed out of our bytecode interpreter, 
-    // we would store ip in a local variable. It gets modified so often during execution 
-    // that we want the C compiler to keep it in a register.
-    vm.ip = vm.chunk->code;
-    return run();
+ InterpretResult interpret(const char* source) {
+    compile(source);
+    return INTERPRET_OK;
  }
