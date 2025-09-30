@@ -35,12 +35,19 @@ void initVM() {
     // we want to ensure those statements all end up in the same scope when the macro is expaneded.
     // This trick gives us a way to contain multiple statements inside a block that also permits
     // a semicolon at the end.
+    // In this macro we decrement and increment `stackTop` unnecessarily
+    // #define BINARY_OP(op) \
+    //     do { \
+    //         double b = pop(); \
+    //         double a = pop(); \
+    //         push(a op b); \
+    //     } while (false)
     #define BINARY_OP(op) \
         do { \
-            double b = pop(); \
-            double a = pop(); \
-            push(a op b); \
+            vm.stackTop[-2] = vm.stackTop[-2] op vm.stackTop[-1]; \
+            vm.stackTop--; \
         } while (false)
+
 
     for (;;) {
         #ifdef DEBUG_TRACE_EXECUTION
@@ -70,7 +77,11 @@ void initVM() {
             case OP_SUBTRACT: BINARY_OP(-); break;
             case OP_MULTIPLY: BINARY_OP(*); break;
             case OP_DIVIDE:   BINARY_OP(/); break;
-            case OP_NEGATE: push(-pop()); break;
+            // case OP_NEGATE: push(-pop()); break; - This does a redundant pop followed by a push
+            case OP_NEGATE: {
+                vm.stackTop[-1] = -vm.stackTop[-1];
+                break;
+            }
             case OP_RETURN: {
                 printValue(pop());
                 printf("\n");
