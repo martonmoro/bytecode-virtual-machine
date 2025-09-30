@@ -35,14 +35,16 @@ static int simpleInstruction(const char* name, int offset) {
 // Next, it reads a single byte from the bytecode at the give noffset
 int disassembleInstruction(Chunk* chunk, int offset) {
     printf("%04d ", offset);
-    if (offset > 0 && chunk->lines[offset] == chunk->lines[offset -1]) {
+
+    int currentLine = getLine(&chunk->lineArray, offset);
+    if (offset > 0 && currentLine == getLine(&chunk->lineArray, offset - 1)) {
         // Bytecode instructions tend to be pretty fine-grained. 
         // A single line of source code often compiles to a whole sequence of instructions. 
         // To make that more visually clear, we show a | for any instruction that comes 
         // from the same source line as the preceding one. 
         printf("   | ");
     } else {
-        printf("%4d ", chunk->lines[offset]);
+        printf("%4d ", currentLine);
     }
 
     uint8_t instruction = chunk->code[offset];

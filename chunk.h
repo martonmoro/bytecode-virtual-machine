@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "value.h"
+#include "line.h"
 
 // Each instrcution has a one-byte operation code (opcode).
 // That number controls what kind of instruction we're dealing with
@@ -26,7 +27,7 @@ typedef struct
     int count;
     int capacity;
     uint8_t *code;
-    int* lines;
+    LineArray lineArray;
     ValueArray constants;
 } Chunk;
 
