@@ -30,6 +30,7 @@ void writeChunk(Chunk* chunk, uint8_t byte, int line) {
     chunk->count++;
 }
 
+// Write constant value to the chunk's constants array
 int addConstant(Chunk* chunk, Value value) {
     writeValueArray(&chunk->constants, value);
     // We return the index where the constant was appended
