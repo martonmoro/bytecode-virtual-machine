@@ -1,0 +1,38 @@
+#ifndef clox_chunk_h
+#define clox_chunk_h
+
+#include "common.h"
+#include "value.h"
+
+// Each instrcution has a one-byte operation code (opcode).
+// That number controls what kind of instruction we're dealing with
+//
+// We allow instructions to have operands. These are stored as binary
+// data immediately after the opcode in the instrcution stream.
+// ( Bytecode instruction operands are not the same as the operands 
+// passed to an arithmetic operator. When we get to expressions that 
+// arithmetic operand values are tracked separately. 
+// Instruction operands are a lower-level notion that modify how the 
+// bytecode instruction itself behaves. )
+typedef enum
+{
+    OP_CONSTANT,
+    OP_RETURN
+} OpCode;
+
+// Bytecode is a series of instructions.
+typedef struct
+{
+    int count;
+    int capacity;
+    uint8_t *code;
+    int* lines;
+    ValueArray constants;
+} Chunk;
+
+void initChunk(Chunk *chunk);
+void freeChunk(Chunk* chunk);
+void writeChunk(Chunk* chunk, uint8_t byte, int line);
+int addConstant(Chunk* chunk, Value value);
+
+#endif
