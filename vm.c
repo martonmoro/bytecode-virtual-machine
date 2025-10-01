@@ -96,7 +96,25 @@ void initVM() {
     
  }
 
+ // First we create a new empty chunk and pass it over to the compiler. 
+ // The compiler will take the user's program and fill up the chunk with
+ // bytecode. At least, that's what it will do if the program doesn't 
+ // have any compile errors. We send the complete chunk over to the VM
+ // to be executed. When the VM finishes, we free the chunk and we're done
  InterpretResult interpret(const char* source) {
-    compile(source);
-    return INTERPRET_OK;
+    Chunk chunk;
+    initChunk(&chunk);
+
+    if (!compile(source, &chunk)) {
+        freeChunk(&chunk);
+        return INTERPRET_COMPILE_ERROR;
+    }
+
+    vm.chunk = &chunk;
+    vm.ip = vm.chunk->code;
+
+    InterpretResult result = run();
+
+    freeChunk(&chunk);
+    return result;
  }
