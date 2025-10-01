@@ -2,6 +2,30 @@
 #define clox_value_h
 
 #include "common.h"
+
+typedef enum {
+    VAL_BOOL,
+    VAL_NIL,
+    VAL_NUMBER,
+} ValueType;
+
+// We are using a tagged union to represent values
+typedef struct {
+    ValueType type;
+    union 
+    {
+        bool boolean;
+        double number;
+    } as; 
+} Value;
+// Right now on a 64 bit machine with a typical C compiler our layout look like this: 
+// 4 byte type, 4 byte padding 8 byte union
+// The compiler adds that padding to keep that double on the nearest eight-byte boundary
+// (We could move the tag field after the union, but that doesn’t help much either. 
+// Whenever we create an array of Values—which is where most of our memory usage for 
+// Values will be—the C compiler will insert that same padding between each Value to keep the 
+// doubles aligned.)
+
 // For small fixed-size values like integers, many instruction sets store the value directly
 // in the code stream right after the opcode. These are called imeediate instructions because
 // the bits for the value are immediately after the opcode.
@@ -14,7 +38,18 @@
 // Most virtual machines do something similar. For example, the Java Virtual Machine associates a
 // constant pool with each compiled class. In clox each chunk will carry with it a list of values
 // that appear as literals in the program.
-typedef double Value;
+
+#define IS_BOOL(value)    ((value).type == VAL_BOOL)
+#define IS_NIL(value)     ((value).type == VAL_NIL)
+#define IS_NUMBER(value)  ((value).type == VAL_NUMBER)
+
+#define AS_BOOL(value)    ((value).as.boolean)
+#define AS_NUMBER(value)  ((value).as.number)
+
+// compound literal and designated initializer
+#define BOOL_VAL(value)   ((Value){VAL_BOOL, {.boolean = value}})
+#define NIL_VAL           ((Value){VAL_NIL, {.number = 0}})
+#define NUMBER_VAL(value) ((Value){VAL_NUMBER, {.number = value}})
 
 // The constant pool is an array of values. The instruction to load a constant looks up the value
 // by index in that array.
@@ -25,6 +60,7 @@ typedef struct
     Value *values;
 } ValueArray;
 
+bool valuesEqual(Value a, Value b);
 void initValueArray(ValueArray *array);
 void writeValueArray(ValueArray *array, Value value);
 void freeValueArray(ValueArray *array);
