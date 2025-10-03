@@ -28,11 +28,13 @@ struct Obj
 // a pointer to a struct and safely convert it to a pointer to its first field and back.
 // Given an `ObjString*` we can safely cast it to `Obj*` and then access the type field from
 // it. Every `ObjString` "is" and Obj in the OOP sense of "is"
+// We are caching the hash for the hash table
 struct ObjString
 {
     Obj obj;
     int length;
     char *chars;
+    uint32_t hash;
 };
 
 ObjString* takeString(char* chars, int length);
