@@ -34,10 +34,12 @@ static void runtimeError(const char* format, ...) {
 void initVM() {
     resetStack();
     vm.objects = NULL;
+    initTable(&vm.globals);
     initTable(&vm.strings);
 }
 
 void freeVM() {
+    freeTable(&vm.globals);
     freeTable(&vm.strings);
     freeObjects();
 }
@@ -79,6 +81,9 @@ static void concatenate() {
  static InterpretResult run() {
     #define READ_BYTE() (*vm.ip++)
     #define READ_CONSTANT() (vm.chunk->constants.values[READ_BYTE()])
+    // Reads a one-byte operand from the bytecode chunk. It treats that as an index into the chunk's
+    // constant table and returns the string at that index.
+    #define READ_STRING() AS_STRING(READ_CONSTANT())
     // This macro needs to expand to a series of statements. To be careful macro authors,
     // we want to ensure those statements all end up in the same scope when the macro is expaneded.
     // This trick gives us a way to contain multiple statements inside a block that also permits
@@ -130,6 +135,51 @@ static void concatenate() {
             case OP_NIL: push(NIL_VAL); break;
             case OP_TRUE: push(BOOL_VAL(true)); break;
             case OP_FALSE: push(BOOL_VAL(false)); break;
+            case OP_POP: pop(); break;
+            case OP_GET_GLOBAL: {
+                // We pull the constant table index from the instructuon's 
+                // operand and get the variable name
+                ObjString* name = READ_STRING();
+                Value value;
+                // We use the name as a key to look up the variable's value 
+                // in the global hash table
+                if (!tableGet(&vm.globals, name, &value)) {
+                    runtimeError("Undefined variable '%s'.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                push(value);
+                break;
+            }
+            case OP_DEFINE_GLOBAL: {
+                // We get the name of the variable from the constant table
+                ObjString* name = READ_STRING();
+                // Then we take the value from the top of the stack and store
+                // it in the hash table with that name as the key.
+                tableSet(&vm.globals, name, peek(0));
+                // We don’t pop the value until after we add it to the hash table. 
+                // That ensures the VM can still find the value if a garbage 
+                // collection is triggered right in the middle of adding it to the 
+                // hash table. That’s a distinct possibility since the hash table 
+                // requires dynamic allocation when it resizes.
+                pop();
+                break;
+            }
+            case OP_SET_GLOBAL: {
+                ObjString* name = READ_STRING();
+                if (tableSet(&vm.globals, name, peek(0))) {
+                    // The call to `tableSet()` stores the value in the global variable
+                    // table even if the variable wasn't previously defined. So we also
+                    // take care to delete that zombie value from the table.
+                    tableDelete(&vm.globals, name);
+                    runtimeError("Undefined variable '%s'.", name->chars);
+                    return INTERPRET_RUNTIME_ERROR;
+                }
+                // One of the differences from OP_DEFINE_GLOBAL is that setting a variable
+                // does not pop the value off the stack. Assignment is an expression, so it
+                // needs to leave that value there in case the assignemtn is nested inside 
+                // some larger expression.
+                break;
+            }
             case OP_EQUAL: {
                 Value b = vm.stackTop[-1];
                 Value a = vm.stackTop[-2];
@@ -171,15 +221,20 @@ static void concatenate() {
                 vm.stackTop[-1] = NUMBER_VAL(-AS_NUMBER(vm.stackTop[-1]));
                 break;
             }
-            case OP_RETURN: {
+            case OP_PRINT: {
                 printValue(pop());
                 printf("\n");
+                break;
+            }
+            case OP_RETURN: {
+                // Exit interpreter
                 return INTERPRET_OK;
             }
         }
     }
     #undef READ_BYTE
     #undef READ_CONSTANT
+    #undef READ_STRING
     #undef BINARY_OP
     
  }
