@@ -136,6 +136,27 @@ static void concatenate() {
             case OP_TRUE: push(BOOL_VAL(true)); break;
             case OP_FALSE: push(BOOL_VAL(false)); break;
             case OP_POP: pop(); break;
+            case OP_SET_LOCAL: {
+                // It takes the assigned value from the top of the stack and stores it in the stack
+                // slot corresponding to the local variable. Note that it doesn’t pop the value from 
+                // the stack. Remember, assignment is an expression, and every expression produces a 
+                // value. The value of an assignment expression is the assigned value itself, so the 
+                // VM just leaves the value on the stack.
+                uint8_t slot = READ_BYTE();
+                vm.stack[slot] = peek(0);
+                break;
+            }
+            case OP_GET_LOCAL: {
+                uint8_t slot = READ_BYTE();
+                // It seems redundant to push the local’s value onto the stack since it’s already 
+                // on the stack lower down somewhere. The problem is that the other bytecode 
+                // instructions only look for data at the top of the stack. This is the core aspect 
+                // that makes our bytecode instruction set stack-based. Register-based bytecode 
+                // instruction sets avoid this stack juggling at the cost of having larger instructions 
+                // with more operands.
+                push(vm.stack[slot]);
+                break;
+            }
             case OP_GET_GLOBAL: {
                 // We pull the constant table index from the instructuon's 
                 // operand and get the variable name
