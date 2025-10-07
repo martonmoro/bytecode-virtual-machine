@@ -143,6 +143,24 @@ static void emitBytes(uint8_t byte1, uint8_t byte2) {
     emitByte(byte2);
 }
 
+static void emitLoop(int loopStart) {
+    emitByte(OP_LOOP);
+
+    int offset = currentChunk()->count - loopStart + 2;
+    if (offset > UINT16_MAX) error("Loop body too large.");
+
+    emitByte((offset >> 8) & 0xff);
+    emitByte(offset & 0xff);
+}
+
+// Emits a bytecode instruction and writes a placeholder operand for the jump offset.
+static int emitJump(uint8_t instruction) {
+    emitByte(instruction);
+    emitByte(0xff);
+    emitByte(0xff);
+    return currentChunk()->count - 2;
+}
+
 static void emitReturn() {
     emitByte(OP_RETURN);
 }
@@ -159,6 +177,20 @@ static uint8_t makeConstant(Value value) {
 
 static void emitConstant(Value value) {
     emitBytes(OP_CONSTANT, makeConstant(value));
+}
+
+// Goes back into the bytecode and replaces the operand at the given location with the 
+// calculated jump offset.
+static void patchJump(int offset) {
+    // -2 to adjust for the bytecode for the jump offset itself
+    int jump = currentChunk()->count - offset - 2;
+
+    if (jump > UINT16_MAX) {
+        error("Too much code to jump over.");  
+    }
+
+    currentChunk()->code[offset] = (jump >> 8) & 0xff;
+    currentChunk()->code[offset + 1] = jump & 0xff;
 }
 
 static void initCompiler(Compiler* compiler) {
@@ -262,6 +294,21 @@ static void number(bool canAssign) {
     emitConstant(NUMBER_VAL(value));
 }
 
+// If the left-hand side is truthy, then we skip over the right operand. 
+// Thus we need to jump when a value is truthy. When the left-hand side
+// is falsey, it does a tiny jump over the next statement. That statement
+// is an unconditional jump over the code for the right operand.
+static void or_(bool canAssign) {
+    int elseJump = emitJump(OP_JUMP_IF_FALSE);
+    int endJump = emitJump(OP_JUMP);
+
+    patchJump(elseJump);
+    emitByte(OP_POP);
+
+    parsePrecedence(PREC_OR);
+    patchJump(endJump);
+}
+
 // Takes the string's characters directly from the lexeme. We also trim the ""s
 // If Lox supported string escape sequences we'd translate those here
 static void string(bool canAssign) {
@@ -344,7 +391,7 @@ ParseRule rules[] = {
   [TOKEN_IDENTIFIER]    = {variable, NULL,   PREC_NONE},
   [TOKEN_STRING]        = {string,   NULL,   PREC_NONE},
   [TOKEN_NUMBER]        = {number,   NULL,   PREC_NONE},
-  [TOKEN_AND]           = {NULL,     NULL,   PREC_NONE},
+  [TOKEN_AND]           = {NULL,     and_,   PREC_AND},
   [TOKEN_CLASS]         = {NULL,     NULL,   PREC_NONE},
   [TOKEN_ELSE]          = {NULL,     NULL,   PREC_NONE},
   [TOKEN_FALSE]         = {literal,  NULL,   PREC_NONE},
@@ -352,7 +399,7 @@ ParseRule rules[] = {
   [TOKEN_FUN]           = {NULL,     NULL,   PREC_NONE},
   [TOKEN_IF]            = {NULL,     NULL,   PREC_NONE},
   [TOKEN_NIL]           = {literal,  NULL,   PREC_NONE},
-  [TOKEN_OR]            = {NULL,     NULL,   PREC_NONE},
+  [TOKEN_OR]            = {NULL,     or_,    PREC_OR},
   [TOKEN_PRINT]         = {NULL,     NULL,   PREC_NONE},
   [TOKEN_RETURN]        = {NULL,     NULL,   PREC_NONE},
   [TOKEN_SUPER]         = {NULL,     NULL,   PREC_NONE},
@@ -494,6 +541,20 @@ static void defineVariable(uint8_t global) {
     emitBytes(OP_DEFINE_GLOBAL, global);
 }
 
+// At the point this is called, the left-hand side expression has already been compiler. That means
+// at runtime, its value will be on top of the stack. If that value is falsey, then we know the entire
+// and must be false, so we skip the right operand and leave the left-hand side value as the result of
+// the entire expression. Otherwise, we discard the left-hand value and evaluate the right operand 
+// which becomes the result of the whole and expression.
+static void and_(bool canAssign) {
+    int endJump = emitJump(OP_JUMP_IF_FALSE);
+
+    emitByte(OP_POP);
+    parsePrecedence(PREC_AND);
+
+    patchJump(endJump);
+}
+
 // Returns the rule at the given index
 // This function exists solely to handle a declaration cycle in the C code.
 // `binary()` is defined before the rules table so the table can store a 
@@ -546,10 +607,128 @@ static void expressionStatement() {
     emitByte(OP_POP);
 }
 
+// https://craftinginterpreters.com/image/jumping-back-and-forth/for.png
+static void forStatement() {
+    beginScope();
+    consume(TOKEN_LEFT_PAREN, "Expect '(' after 'for'.");
+    // Initializer clause
+    if (match(TOKEN_SEMICOLON)) {
+        // No initializer
+    } else if (match(TOKEN_VAR)) {
+        varDeclaration();
+    } else {
+        expressionStatement();
+    }
+
+    // Condition clause
+    int loopStart = currentChunk()->count;
+    int exitJump = -1;
+    if (!match(TOKEN_SEMICOLON)) {
+        expression();
+        consume(TOKEN_SEMICOLON, "Expect ';' after loop condition.");
+
+        // Jump out of the loop if the condition is false
+        exitJump = emitJump(OP_JUMP_IF_FALSE);
+        // Pop condition
+        emitByte(OP_POP);
+    }
+
+    if (!match(TOKEN_RIGHT_PAREN)) {
+        // When the increment is present, we need to compile it now, but it shouldn't 
+        // execute yet. So, first, we emit an unconditional jump that hops over the 
+        // increment caluse's code to the body of the loop.
+        int bodyJump = emitJump(OP_JUMP);
+        int incrementStart = currentChunk()->count;
+        // Next, we compile the increment expression itself. This is usually an assignment.
+        expression();
+        // Whatever it is, we only execute it for its side effect, so we also emit a pop.
+        emitByte(OP_POP);
+        consume(TOKEN_RIGHT_PAREN, "Expecte ')' after for clauses.");
+
+        // First we emit a loop instruction. This is the main loop that takes us back to the
+        // top of the for loop - right before the condition expression if there is one. That 
+        // loop happens right after the increment, since the increment executes at the end of 
+        // each loop iteration.
+        emitLoop(loopStart);
+        // Then we change loopStart to point to the offset where the increment expression begins.
+        // Later, when we emit the loop instruction after the body statement, this will cause it
+        // to jump up to the increment expression instead of the top of the loop like it does when 
+        // there is no increment.
+        loopStart = incrementStart;
+        patchJump(bodyJump);
+    }
+
+    statement();
+    emitLoop(loopStart);
+
+    // After the loop body we need to patch the jump if there is condition
+    if (exitJump != -1) {
+        patchJump(exitJump);
+        // Pop condition
+        emitByte(OP_POP);
+    }
+
+    endScope();
+}
+
+// First we compile the condition expression, bracketed by parantheses. At runtime,
+// that will leave the condition value on top of the stack. We'll use that to determine
+// whether to execute the then branch or skip it.
+// Then we emit a new OP_JUMP_IF_FALSE instruction. It has an operand for how much to 
+// offset the ip - how many bytes of code to skip. If the condition is falsey, it adjusts
+// the ip by that amount.
+static void ifStatement() {
+    consume(TOKEN_LEFT_PAREN, "Expect '(' after 'if'.");
+    expression();
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after condition.");
+
+    int thenJump = emitJump(OP_JUMP_IF_FALSE);
+    // Pop the condition
+    emitByte(OP_POP);
+    statement();
+
+    int elseJump = emitJump(OP_JUMP);
+
+    // We use backpatching. We emit the jump instruction first with a placeholder offset
+    // operand. We keep track of where that half-finished instruction is. Next, we compile
+    // the body. Once that's done, we know how far to jump. So we go back and replace that 
+    // placeholder offset with the real one now that we can calculate it.
+    patchJump(thenJump);
+    // Pop the condition
+    emitByte(OP_POP);
+
+    if (match(TOKEN_ELSE)) statement();
+    patchJump(elseJump);
+}
+
 static void printStatement() {
     expression();
     consume(TOKEN_SEMICOLON, "Expected ';' after value.");
     emitByte(OP_PRINT);
+}
+
+// We compile the condition expression, surrounded by mandatory parantheses.
+// Tha's followed by a jump instruction that skips over the subsequent body statement if the 
+// condition is falsey. We patch the jump after compiling the body and take care to pop the 
+// condition value from the stack on either path.
+// After executing the body of a while loop, we jump all the way back to before the condition.
+// That way, we re-evaluate the condition expression on each iteration. We store the chunk's 
+// current instruction count in loopStart to record the offset in the bytecode right before the 
+// condition expression we're about to compile. Then we pass that into this help function.
+// https://craftinginterpreters.com/image/jumping-back-and-forth/while.png
+static void whileStatement() {
+    int loopStart = currentChunk()->count;
+    consume(TOKEN_LEFT_PAREN, "Expect '(' after 'while'.");
+    expression();
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after condition");
+
+    int exitJump = emitJump(OP_JUMP_IF_FALSE);
+    emitByte(OP_POP);
+    statement();
+    emitLoop(loopStart);
+
+    patchJump(exitJump);
+    emitByte(OP_POP);
 }
 
 // We skip tokens indiscriminately until we reach something that looks like a statement boundary. 
@@ -610,7 +789,13 @@ block          → "{" declaration* "}" ;
 static void statement() {
     if (match(TOKEN_PRINT)) {
         printStatement();
-    } else if (match(TOKEN_LEFT_BRACE)){
+    } else if (match(TOKEN_FOR)) {
+        forStatement();
+    } else if (match(TOKEN_IF)) {
+        ifStatement();
+    } else if (match(TOKEN_WHILE)) {
+        whileStatement();
+    } else if (match(TOKEN_LEFT_BRACE)) {
         beginScope();
         block();
         endScope();
