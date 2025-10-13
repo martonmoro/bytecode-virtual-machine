@@ -1,20 +1,34 @@
 #ifndef clox_vm_h
 #define clox_vm_h
 
-#include "chunk.h"
+#include "object.h"
 #include "table.h"
 #include "value.h"
 
-#define STACK_MAX 256
+#define FRAMES_MAX 64
+#define STACK_MAX (FRAMES_MAX * UINT8_COUNT)
+
+// A CallFrame represents a single ongoing function call
+// Each time a function is called we create one of these structs
+typedef struct {
+    ObjFunction* function;
+    // Instead of storing the return address in the callee's frame, the caller stores
+    // its own ip. When we return from a function, the VM will jump to the ip of the 
+    // caller's CallFrame and resume from there.
+    uint8_t* ip;
+    // Points into the VM's value stack at the first slot that this function can use
+    Value* slots;
+} CallFrame;
 
 typedef struct
 {
-    Chunk *chunk;
-    // We use an actual byte pointer instead of an index beacuse it is faster
-    // to dereference a pointer than  look up an element in an array by index
-    // Instruction Pointer (other architectures call it program counter)
-    // it points to the instruction that is about to be executed
-    uint8_t *ip;
+    // An array of CallFrame structs treated as a stack (it replaces the chunk and ip fields)
+    // Now each CallFrame has its own ip and its own pointer to the ObjFunction that it's 
+    // executing. From there, we can get to the function's chunk
+    CallFrame frames[FRAMES_MAX];
+    // Stores the current height of the CallFrame stack - the number of ongoing function calls
+    int frameCount;
+
     Value stack[STACK_MAX];
     Value* stackTop;
     Table globals;

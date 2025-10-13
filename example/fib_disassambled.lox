@@ -1,0 +1,48 @@
+// Disassembly of top-level script
+// 0000    4 OP_CONSTANT         1 '<fn fib>' (push the compiled function object onto stack)
+// 0002    | OP_DEFINE_GLOBAL    0 'fib' (store it in global variable fib)
+fun fib(n) {
+// Disassembly of fib Function
+// 0000    2 OP_GET_LOCAL        1 (get parameter n, slot 1)
+// 0002    | OP_CONSTANT         0 '2' (push constant 2)
+// 0004    | OP_LESS (compare if n < 2)
+// 0005    | OP_JUMP_IF_FAlSE    5 -> 15 (skip the return statement)
+// 0008    | OP_POP (pop the condition value)
+// 0009    | OP_GET_LOCAL        1 (get parameter n, slot 1)
+// 0011    | OP_RETURN (return n)
+  if (n < 2) return n;
+// 0012    | OP_JUMP            12 -> 16 (Jump over else branch)
+// 0015    | OP_POP (pop the condition value when false path)
+// 0016    3 OP_GET_GLOBAL       1 'fib' (get the function fib from globals)
+// 0018    | OP_GET_LOCAL        1 (get n)
+// 0020    | OP_CONSTANT         2 '2' (push 2)
+// 0022    | OP_SUBTRACT (compute n - 2)
+// 0023    | OP_CALL             1 (call function with one argument)
+// 0025    | OP_GET_GLOBAL       3 'fib' (get the function fib from globals)
+// 0027    | OP_GET_LOCAL        1 (get n)
+// 0029    | OP_CONSTANT         4 '1' (push 1)
+// 0031    | OP_SUBTRACT (compute n - 1)
+// 0032    | OP_CALL             1 (call function with one argument)
+// 0034    | OP_ADD (add the two results together)
+// 0035    | OP_RETURN (return the sum)
+// 0036    4 OP_NIL (implicit return at the end of function)
+// 0037    | OP_RETURN
+  return fib(n - 2) + fib(n - 1);
+}
+
+// Disassembly of top-level script
+// 0004    6 OP_GET_GLOBAL       3 'clock' (get native clock function)
+// 0006    | OP_CALL             0 (call it with 0 arguments)
+// 0008    | OP_DEFINE_GLOBAL    2 'start' (store result in global start)
+var start = clock();
+// 0010    7 OP_GET_GLOBAL       4 'fib' (get the fib function)
+// 0012    | OP_CONSTANT         5 '3' (push argument 3)
+// 0014    | OP_CALL             1 (call with 1 argument)
+// 0016    | OP_PRINT (print the result)
+print fib(3);
+// 0017    8 OP_GET_GLOBAL       6 'clock' (get native clock function)
+// 0019    | OP_CALL             0 (call it with 0 arguments)
+// 0021    | OP_GET_GLOBAL       7 'start' (get global start, slot 7)
+// 0023    | OP_SUBTRACT (compute start - clock())
+// 0024    | OP_PRINT (print result)
+print clock() - start;

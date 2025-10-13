@@ -48,7 +48,25 @@ typedef struct {
     int depth;
 } Local;
 
-typedef struct {
+typedef enum {
+    TYPE_FUNCTION,
+    TYPE_SCRIPT
+} FunctionType;
+
+typedef struct Compiler {
+    // We treat the series of nested Compiler structs as a stack. Instead of using an array we use a
+    // linked list. Each Compiler points back to the Compiler for the function taht encloses it, all the
+    // way back to the root Compiler for the top-level code.
+    struct Compiler* enclosing;
+    // The “top level” of a Lox program is also imperative code and we need a chunk to compile that into. 
+    // We can simplify the compiler and VM by placing that top-level code inside an automatically defined 
+    // function too. That way, the compiler is always within some kind of function body, and the VM always 
+    // runs code by invoking a function. It’s as if the entire program is wrapped inside an implicit 
+    // main() function. One semantic corner where that analogy breaks down is global variables. They have 
+    // special scoping rules different from local variables, so in that way, the top level of a script 
+    // isn’t like a function body.
+    ObjFunction* function;
+    FunctionType type;
     // Simple, flat array of all locals that are in scope during each point in the compilation process.
     // They are ordered in the array in the order that their declarations appear in the code. Since the
     // instruction operand we'll use to encode a local is a single byte, our VM has a hard limit on the 
@@ -71,7 +89,7 @@ Chunk* compilingChunk;
 // global state. Later, when we start compiling user-defined functions, the notion of 
 // "current chunk" gets more complicated
 static Chunk* currentChunk() {
-    return compilingChunk;
+    return &current->function->chunk;
 }
 
 static void errorAt(Token* token, const char* message) {
@@ -162,6 +180,7 @@ static int emitJump(uint8_t instruction) {
 }
 
 static void emitReturn() {
+    emitByte(OP_NIL);
     emitByte(OP_RETURN);
 }
 
@@ -193,19 +212,44 @@ static void patchJump(int offset) {
     currentChunk()->code[offset + 1] = jump & 0xff;
 }
 
-static void initCompiler(Compiler* compiler) {
+static void initCompiler(Compiler* compiler, FunctionType type) {
+    compiler->enclosing = current;
+    compiler->function = NULL;
+    compiler->type = type;
     compiler->localCount = 0;
     compiler->scopeDepth = 0;
+    // Creating an ObjFunction in the compiler might seem a little strange. A function object 
+    // is the runtime representation of a function, but here we are creating it at compile time. 
+    // The way to think of it is that a function is similar to a string or number literal. It 
+    // forms a bridge between the compile time and runtime worlds. When we get to function 
+    // declarations, those really are literals—they are a notation that produces values of a 
+    // built-in type. So the compiler creates function objects during compilation. Then, at runtime, 
+    // they are simply invoked.
+    compiler->function = newFunction();
     current = compiler;
+    if (type != TYPE_SCRIPT) {
+        current->function->name = copyString(parser.previous.start, parser.previous.length);
+    }
+
+    // The compiler implicitly claims stack slot zero for the VM's own internal use
+    Local* local = &current->locals[current->localCount++];
+    local->depth = 0;
+    // We give it an empty name so that the user can't write an identifier that refers to it.
+    local->name.start = "";
+    local->name.length = 0;
 }
 
-static void endCompiler() {
+static ObjFunction* endCompiler() {
     emitReturn();
+    ObjFunction* function = current->function;
 #ifdef DEBUG_PRINT_CODE
     if (!parser.hadError) {
-        disassembleChunk(currentChunk(), "code");
+        disassembleChunk(currentChunk(), function->name != NULL ? function->name->chars : "<script>");
     }
 #endif
+
+    current = current->enclosing;
+    return function;
 }
 
 static void beginScope() {
@@ -233,6 +277,7 @@ static ParseRule* getRule(TokenType type);
 static void parsePrecedence(Precedence precedence);
 static uint8_t identifierConstant(Token* name); 
 static int resolveLocal(Compiler* compiler, Token* token);
+static uint8_t argumentList();
 
 // Our ypothetical array of function pointers doesn’t just list functions to parse
 // expressions that start with a given token. Instead, it’s a table of function 
@@ -259,6 +304,18 @@ static void binary(bool canAssign) {
         case TOKEN_SLASH:         emitByte(OP_DIVIDE); break;
         default: return; // Unreachable
     }
+}
+
+// a function call expression is kind of an infix ( operator. You have a 
+// high-precedence expression on the left for the thing being called—usually 
+// just a single identifier. Then the ( in the middle, followed by the 
+// argument expressions separated by commas, and a final ) to wrap it up at 
+// the end.
+static void call(bool canAssign) {
+    uint8_t argCount = argumentList();
+    // Emit a new OP_CALL instruction to invoke the function, using the 
+    // argument count as an operand.
+    emitBytes(OP_CALL, argCount);
 }
 
 static void literal(bool canAssign) {
@@ -292,6 +349,20 @@ static void grouping(bool canAssign) {
 static void number(bool canAssign) {
     double value = strtod(parser.previous.start, NULL);
     emitConstant(NUMBER_VAL(value));
+}
+
+// At the point this is called, the left-hand side expression has already been compiler. That means
+// at runtime, its value will be on top of the stack. If that value is falsey, then we know the entire
+// and must be false, so we skip the right operand and leave the left-hand side value as the result of
+// the entire expression. Otherwise, we discard the left-hand value and evaluate the right operand 
+// which becomes the result of the whole and expression.
+static void and_(bool canAssign) {
+    int endJump = emitJump(OP_JUMP_IF_FALSE);
+
+    emitByte(OP_POP);
+    parsePrecedence(PREC_AND);
+
+    patchJump(endJump);
 }
 
 // If the left-hand side is truthy, then we skip over the right operand. 
@@ -369,7 +440,7 @@ static void unary(bool canAssign) {
 // of that type, and the precedence of an infix expression that uses that 
 // token as an operator.
 ParseRule rules[] = {
-  [TOKEN_LEFT_PAREN]    = {grouping, NULL,   PREC_NONE},
+  [TOKEN_LEFT_PAREN]    = {grouping, call,   PREC_CALL},
   [TOKEN_RIGHT_PAREN]   = {NULL,     NULL,   PREC_NONE},
   [TOKEN_LEFT_BRACE]    = {NULL,     NULL,   PREC_NONE}, 
   [TOKEN_RIGHT_BRACE]   = {NULL,     NULL,   PREC_NONE},
@@ -523,6 +594,9 @@ static uint8_t parseVariable(const char* errorMessage) {
 }
 
 static void markInitialized() {
+    // A top-level function declaration will also call this function. When that happens, there is
+    // no local variable to mark initialized - the function is bound to a global variable.
+    if (current->scopeDepth == 0) return;
     current->locals[current->localCount -1].depth = current->scopeDepth;
 }
 
@@ -541,18 +615,21 @@ static void defineVariable(uint8_t global) {
     emitBytes(OP_DEFINE_GLOBAL, global);
 }
 
-// At the point this is called, the left-hand side expression has already been compiler. That means
-// at runtime, its value will be on top of the stack. If that value is falsey, then we know the entire
-// and must be false, so we skip the right operand and leave the left-hand side value as the result of
-// the entire expression. Otherwise, we discard the left-hand value and evaluate the right operand 
-// which becomes the result of the whole and expression.
-static void and_(bool canAssign) {
-    int endJump = emitJump(OP_JUMP_IF_FALSE);
-
-    emitByte(OP_POP);
-    parsePrecedence(PREC_AND);
-
-    patchJump(endJump);
+// Returns the number of arguments it compiled. Each argument expression generates code that 
+// leaves its value on the stack in preparation for the call. 
+static uint8_t argumentList() {
+    uint8_t argCount = 0;
+    if (!check(TOKEN_RIGHT_PAREN)) {
+        do {
+            expression();
+            if (argCount == 255) {
+                error("Can't have more than 255 arguments.");
+            }
+            argCount++;
+        } while (match(TOKEN_COMMA));
+    }
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after arguments.");
+    return argCount;
 }
 
 // Returns the rule at the given index
@@ -579,6 +656,62 @@ static void block() {
     }
 
     consume(TOKEN_RIGHT_BRACE, "Expect '}' after block.");
+}
+
+// Create a separate Compiler for each function being compiled. When we start 
+// compiling a function declaration, we create a new Compiler on the C stack 
+// and initialize it. initCompiler() sets that Compiler to be the current one.
+// Then, as we compile the body, all of the functions that emit bytecode write 
+// to the chunk owned by the new Compiler's function.
+// After we reach the end of the function's block body, we call endCompiler().
+// That yields the newly compiler function object, which we store as a contant
+// in the surrounding function's constant table. 
+static void function(FunctionType type) {
+    Compiler compiler;
+    initCompiler(&compiler, type);
+    beginScope();
+
+    consume(TOKEN_LEFT_PAREN, "Expect '(' after function name.");
+
+    // Semantically, a parameter is simply a local variable declared in the
+    // outermost lexical scope of the function body. Unlike local variables,
+    // which have initialziers, there's no code here to initialzie the 
+    // parameter's argument
+    if (!check(TOKEN_RIGHT_PAREN)) {
+        do {
+            current->function->arity++;
+            if (current->function->arity > 255) {
+                errorAtCurrent("Can't have more than 255 parameters.");
+            }
+            uint8_t constant = parseVariable("Expected parameter name.");
+            defineVariable(constant);
+        } while (match(TOKEN_COMMA));
+    }
+
+    consume(TOKEN_RIGHT_PAREN, "Expect ')' after parameters.");
+    consume(TOKEN_LEFT_BRACE, "Expect '{' before function body.");
+
+    block();
+
+    ObjFunction* function = endCompiler();
+    emitBytes(OP_CONSTANT, makeConstant(OBJ_VAL(function)));
+}
+
+// Functions are first-class values, and a function declaration simply creates 
+// and stores one in a newly declared variable. 
+static void funDeclaration() {
+    // We parse the name just like any other variable declaration. A function
+    // declaration at the top level will bind the function to a global variable.
+    // Inside a block or other function, a function declaration creates a local
+    // variable.
+    uint8_t global = parseVariable("Expected a function name.");
+    // It is safe for a function to refer to its own name inside its body. 
+    markInitialized();
+    // We compile the function itself. Its parameter list and block body. For that 
+    // we use a helper which leaves the resulting function object on top of the stack
+    function(TYPE_FUNCTION);
+    // Store the function back into the variable we declared for it.
+    defineVariable(global);
 }
 
 static void varDeclaration() {
@@ -707,6 +840,20 @@ static void printStatement() {
     emitByte(OP_PRINT);
 }
 
+static void returnStatement() {
+    if (current->type == TYPE_SCRIPT) {
+        error("Can't return from top-level code.");
+    }
+
+    if (match(TOKEN_SEMICOLON)) {
+        emitReturn();
+    } else {
+        expression();
+        consume(TOKEN_SEMICOLON, "Expect ';' after return value.");
+        emitByte(OP_RETURN);
+    }
+}
+
 // We compile the condition expression, surrounded by mandatory parantheses.
 // Tha's followed by a jump instruction that skips over the subsequent body statement if the 
 // condition is falsey. We patch the jump after compiling the body and take care to pop the 
@@ -766,7 +913,9 @@ declaration    → classDecl
                | statement ;
 */
 static void declaration() {
-    if (match(TOKEN_VAR)) {
+    if (match(TOKEN_FUN)) {
+        funDeclaration();
+    } else if (match(TOKEN_VAR)) {
         varDeclaration();
     } else {
         statement();
@@ -793,6 +942,8 @@ static void statement() {
         forStatement();
     } else if (match(TOKEN_IF)) {
         ifStatement();
+    } else if (match(TOKEN_RETURN)) {
+        returnStatement();
     } else if (match(TOKEN_WHILE)) {
         whileStatement();
     } else if (match(TOKEN_LEFT_BRACE)) {
@@ -804,11 +955,10 @@ static void statement() {
     }
 }
 
-bool compile(const char* source, Chunk* chunk) {
+ObjFunction* compile(const char* source) {
     initScanner(source);
     Compiler compiler;
-    initCompiler(&compiler);
-    compilingChunk = chunk;
+    initCompiler(&compiler, TYPE_SCRIPT);
 
     parser.hadError = false;
     parser.panicMode = false;
@@ -819,6 +969,9 @@ bool compile(const char* source, Chunk* chunk) {
         declaration();
     }
 
-    endCompiler();
-    return !parser.hadError;
+    // We get the function object from the compiler
+    ObjFunction* function = endCompiler();
+    // If there were no compile errors, we return it. Otherwise, we signal an error by returning
+    // NULL. This way, the VM doesn't try to execute a function that may contain invalid bytecode
+    return parser.hadError ? NULL : function;
 }
