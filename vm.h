@@ -29,7 +29,9 @@ typedef struct
     // Stores the current height of the CallFrame stack - the number of ongoing function calls
     int frameCount;
 
+    // value stack (shared by all functions)
     Value stack[STACK_MAX];
+    // points to the next free slot
     Value* stackTop;
     Table globals;
     Table strings;

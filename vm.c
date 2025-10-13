@@ -105,9 +105,10 @@ static bool call(ObjFunction* function, int argCount) {
         return false;
     }
 
+    // Create a new callframe
     CallFrame* frame = &vm.frames[vm.frameCount++];
     frame->function = function;
-    frame->ip = function->chunk.code;
+    frame->ip = function->chunk.code; // start at beginning of function
     // Ensures that the arguments already on the stack line 
     // up with the function's parameters
     frame->slots = vm.stackTop - argCount - 1;
@@ -351,6 +352,7 @@ static void concatenate() {
             }
             case OP_CALL: {
                 int argCount = READ_BYTE();
+                // peek(argCount) returns stackTop[-1-distance] which is the function itself
                 if (!callValue(peek(argCount), argCount)) {
                     return INTERPRET_RUNTIME_ERROR;
                 }
